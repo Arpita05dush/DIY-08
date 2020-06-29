@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:wsc="http://www.mulesoft.org/schema/mule/wsc" xmlns:ee="http://www.mulesoft.org/schema/mule/ee/core"
+	xmlns:http="http://www.mulesoft.org/schema/mule/http"
+	xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/ee/core http://www.mulesoft.org/schema/mule/ee/core/current/mule-ee.xsd
+http://www.mulesoft.org/schema/mule/wsc http://www.mulesoft.org/schema/mule/wsc/current/mule-wsc.xsd">
+	<wsc:config name="Web_Service_Consumer_Config" doc:name="Web Service Consumer Config" doc:id="9bd5ac1d-64c6-462c-8791-85a3582a253a" >
+		<wsc:connection wsdlLocation="http://apdev-accounts-ws.cloudhub.io/api/transactions?wsdl" service="TransactionServiceService" port="TransactionServicePort" address="http://apdev-accounts-ws.cloudhub.io/api/transactions" />
+	</wsc:config>
+	<http:request-config name="HTTP_Request_configuration" doc:name="HTTP Request configuration" doc:id="7c23ac83-3a92-46a2-b77a-66b107e7f2ed" >
+		<http:request-connection host="apdev-accounts-ws.cloudhub.io" />
+	</http:request-config>
+	<flow name="processAccountsTransactionFlow" doc:id="fae15840-18d4-4d05-abbe-5c0d790f5c37" >
+		<flow-ref doc:name="getAccountsFlow" doc:id="0d5b2841-a994-4d08-8d64-fc504ae7325a" name="getAccountsFlow"/>
+		<ee:transform doc:name="Consolidate" doc:id="5b09079d-56fb-45ee-9a51-1171869eee83" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+
+var directorIDs = ["JKLS483S","FJSA48JD","NMA4FJ9K"]
+
+//Combines Accounts and Transactions by the Account ID. Assigns each account to a
+//director
+fun consolidateAccountsTrans (payload) =
+  payload.accounts map ( (account, index) ->
+  using (id = account.id as String)
+  (
+    account ++
+    {
+      transactions: payload.transactions filter ($.customerRef == id)
+    } ++
+    {
+      assignedDirector: directorIDs[mod(index, sizeOf(directorIDs))]
+    }
+  )
+)
+---
+using (data = consolidateAccountsTrans(payload))
+(data groupBy $.assignedDirector)
+]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<http:request method="POST" doc:name="Post Accounts to Directors" doc:id="b82c9cf3-141d-42d3-84a7-479c875b9371" config-ref="HTTP_Request_configuration" path="/api/accounts_transactions" responseTimeout="3000000"/>
+		<ee:transform doc:name="Transform Message" doc:id="d2229402-e8c7-4304-b4d0-2e3f96ac7784" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	message: "Processed $(sizeOf(vars.accountsPayload)) records."
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+	<flow name="getAccountsFlow" doc:id="9c5d1e98-c3e5-4856-bf66-f41859782ba6" >
+		<http:request method="GET" doc:name="Request" doc:id="22395e13-101e-4ce1-b942-d7c8ae1a9670" path="/api/accounts" config-ref="HTTP_Request_configuration">
+			<http:headers ><![CDATA[#[output application/java
+---
+{
+	"Requester-id" : attributes.headers.'Requester-ID'
+}]]]></http:headers>
+			<http:query-params ><![CDATA[#[output application/java
+---
+{
+	"type" : attributes.queryParams.'type' default "personal"
+}]]]></http:query-params>
+		</http:request>
+		<ee:transform doc:name="Transform Message" doc:id="a6c81626-b045-44d2-8ae4-8684895be8b1" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/java
+---
+{
+}]]></ee:set-payload>
+			</ee:message>
+			<ee:variables >
+				<ee:set-variable variableName="customerIDList" ><![CDATA[%dw 2.0
+output application/json
+---
+/*
+ *  In the DataWeave transform the default operator will return a default value given on the right side of the keyword 
+ *  if the left side of the operator returns null. Otherwise, it will return the value on the left side
+ */
+{customerIDs: payload.*id default []}]]></ee:set-variable>
+				<ee:set-variable variableName="accountsPayload" ><![CDATA[%dw 2.0
+output application/json
+---
+payload default []]]></ee:set-variable>
+			</ee:variables>
+		</ee:transform>
+		<flow-ref doc:name="getTransactionsForGivenAccountsFlow" doc:id="fe4db96f-7e25-4c85-bfd4-475d4083d21b" name="getTransactionsForGivenAccountsFlow"/>
+	</flow>
+	<flow name="getTransactionsForGivenAccountsFlow" doc:id="cdfa96e8-527f-4180-b622-41c96b163c32" >
+		<ee:transform doc:name="Transform Message" doc:id="46442d2c-203c-4099-91fd-fb8df9857667" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/xml
+ns ns0 http://training.mulesoft.com/
+---
+{
+	ns0#GetTransactionsforCustomers: 
+	{(
+		vars.customerIDList.customerIDs map ((customerID , indexOfCustomerID) -> 
+			{customerID: customerID}
+		)
+	)}
+}]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+		<wsc:consume operation="GetTransactionsforCustomers" doc:name="Consume" doc:id="1d39630d-9b2c-45db-b814-41e6e941d2ab" config-ref="Web_Service_Consumer_Config"/>
+		<ee:transform doc:name="Combine Acconts &amp; Transactions" doc:id="4ea68818-b330-4f2d-b108-d625a4f3b85f" >
+			<ee:message >
+				<ee:set-payload ><![CDATA[%dw 2.0
+output application/json
+---
+{
+	accounts: vars.accountsPayload,
+	transactions: payload.body.GetTransactionsResponse.*transaction default []
+}
+]]></ee:set-payload>
+			</ee:message>
+		</ee:transform>
+	</flow>
+</mule>
